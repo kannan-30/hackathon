@@ -1,21 +1,20 @@
 import os
-import requests
 from dotenv import load_dotenv
+from newsapi import NewsApiClient
 
-load_dotenv()
-
-API_KEY = os.getenv("NEWSAPI_KEY")
-BASE_URL = "https://newsapi.org/v2/top-headlines"
+load_dotenv()  # Load environment variables from .env
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 def fetch_news(country="in", category="general"):
     """
     Fetch news from NewsAPI.org for the specified country and category.
+    Returns a list of dictionaries with title, content, and URL.
     """
-    params = {"country": country, "category": category, "apiKey": API_KEY}
-    response = requests.get(BASE_URL, params=params)
-
-    if response.status_code == 200:
-        articles = response.json().get("articles", [])
+    newsapi = NewsApiClient(api_key=NEWS_API_KEY)
+    response = newsapi.get_top_headlines(language="en", country=country, category=category, page_size=5)
+    
+    if response.get("status") == "ok":
+        articles = response.get("articles", [])
         return [
             {
                 "title": article.get("title"),
@@ -24,9 +23,11 @@ def fetch_news(country="in", category="general"):
             }
             for article in articles
         ]
-    return []
+    else:
+        print("Error fetching news:", response)
+        return []
 
 if __name__ == "__main__":
-    # Example: Fetch Indian news
-    news = fetch_news("in")
-    print(news)
+    news = fetch_news("in", "general")
+    for item in news:
+        print(item)

@@ -1,131 +1,104 @@
 import os
-import re
-import string
 import pandas as pd
 import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
+import re
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score
-from nltk.corpus import stopwords
-import nltk
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils import resample
 
-# Ensure stopwords are downloaded
-try:
-    nltk.data.find("corpora/stopwords")
-except LookupError:
-    nltk.download("stopwords")
+def simple_preprocess(text):
+    """
+    Simple preprocessing:
+    - Lowercase the text
+    - Remove extra whitespace
+    (Punctuation is kept to preserve potential signals)
+    """
+    return " ".join(text.lower().split())
 
-# File paths (CSV files are expected in the same directory as model.py)
-FAKE_NEWS_PATH = os.path.join(os.path.dirname(__file__), "fake_news.csv")
-TRUE_NEWS_PATH = os.path.join(os.path.dirname(__file__), "true_news.csv")
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "best_model.pkl")
-VECTORIZER_PATH = os.path.join(os.path.dirname(__file__), "vectorizer.pkl")
+def train_and_save_model():
+    # Load datasets (ensure Fake.csv and True.csv are in the same folder)
+    try:
+        fake_df = pd.read_csv("fake_news.csv")
+        true_df = pd.read_csv("true_news.csv")
+    except Exception as e:
+        print("Error loading CSV files:", e)
+        return
 
-def clean_text(text: str) -> str:
-    """
-    Lowercase, remove punctuation, extra whitespace, and stopwords.
-    """
-    text = text.lower()
-    text = re.sub(r'\[.*?\]', '', text)
-    text = re.sub(f"[{re.escape(string.punctuation)}]", "", text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    stop_words = set(stopwords.words("english"))
-    return " ".join(word for word in text.split() if word not in stop_words)
+    # Set labels: Fake = 1, Real = 0
+    fake_df["label"] = 1
+    true_df["label"] = 0
 
-def load_and_preprocess_data():
-    """
-    Load fake and true news CSVs, clean the text, and assign labels.
-    """
-    fake_df = pd.read_csv(FAKE_NEWS_PATH)
-    true_df = pd.read_csv(TRUE_NEWS_PATH)
-    
-    # Assume the CSV files have a 'text' column for article content
-    fake_df["clean_text"] = fake_df["text"].apply(clean_text)
-    true_df["clean_text"] = true_df["text"].apply(clean_text)
-    
-    # Label data: Fake = 0, Real = 1
-    fake_df["label"] = 0
-    true_df["label"] = 1
-    
-    # Combine and shuffle
-    df = pd.concat([fake_df, true_df]).reset_index(drop=True)
+    # Print initial counts
+    print("Initial counts:")
+    print("Fake:", len(fake_df))
+    print("Real:", len(true_df))
+
+    # Balance the dataset using resampling (downsample the larger class)
+    min_count = min(len(fake_df), len(true_df))
+    fake_df_bal = resample(fake_df, replace=False, n_samples=min_count, random_state=42)
+    true_df_bal = resample(true_df, replace=False, n_samples=min_count, random_state=42)
+
+    # Combine and shuffle the datasets
+    df = pd.concat([fake_df_bal, true_df_bal], ignore_index=True)
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-    return df
+    print("\nAfter balancing, label distribution:")
+    print(df['label'].value_counts())
 
-def train_and_select_model():
-    """
-    Train RandomForest, GradientBoosting, and XGBoost classifiers.
-    Evaluate them, select the best based on accuracy, and save the model and vectorizer.
-    """
-    df = load_and_preprocess_data()
-    X = df["clean_text"]
+    # Replace any "[empty]" placeholders with an empty string
+    df["title"] = df["title"].replace("[empty]", "")
+    df["text"] = df["text"].replace("[empty]", "")
+
+    # Combine title and text into a single column
+    df["combined_text"] = (df["title"].fillna("") + " " + df["text"].fillna("")).str.strip()
+
+    # Drop rows where combined_text is empty
+    before_drop = len(df)
+    df = df[df["combined_text"] != ""]
+    print(f"\nDropped {before_drop - len(df)} rows with empty combined text.")
+
+    # Apply simple preprocessing
+    df["combined_text"] = df["combined_text"].apply(simple_preprocess)
+
+    # Print a few preprocessed samples for inspection
+    print("\nSample preprocessed texts:")
+    print(df["combined_text"].head(5))
+
+    # Prepare features and labels
+    X = df["combined_text"]
     y = df["label"]
-    
-    # Vectorize using TF-IDF
-    vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
-    X_vectorized = vectorizer.fit_transform(X)
-    
-    # Split data for training and evaluation
-    X_train, X_test, y_train, y_test = train_test_split(X_vectorized, y, test_size=0.2, random_state=42)
-    
-    # Define the models to evaluate
-    models = {
-        "RandomForest": RandomForestClassifier(random_state=42),
-        "GradientBoosting": GradientBoostingClassifier(random_state=42),
-        "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric="logloss", random_state=42)
-    }
-    
-    best_model = None
-    best_accuracy = 0
-    best_model_name = ""
-    
-    # Train and evaluate each model
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        predictions = model.predict(X_test)
-        acc = accuracy_score(y_test, predictions)
-        print(f"{name} Accuracy: {acc:.4f}")
-        if acc > best_accuracy:
-            best_accuracy = acc
-            best_model = model
-            best_model_name = name
-            
-    print(f"Selected Model: {best_model_name} with accuracy: {best_accuracy:.4f}")
-    
-    # Save the best model and the vectorizer
-    joblib.dump(best_model, MODEL_PATH)
-    joblib.dump(vectorizer, VECTORIZER_PATH)
-    
-    return best_model, vectorizer
 
-def load_model():
-    """
-    Load the best model and vectorizer from disk.
-    If not found, train and select the best model.
-    """
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(VECTORIZER_PATH):
-        print("Model or vectorizer not found. Training a new model...")
-        return train_and_select_model()
-    else:
-        best_model = joblib.load(MODEL_PATH)
-        vectorizer = joblib.load(VECTORIZER_PATH)
-        print("Best model and vectorizer loaded successfully.")
-        return best_model, vectorizer
+    # Split the data (with stratification)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-# Load (or train) the model when this module is imported
-model, vectorizer = load_model()
+    # Build a pipeline: TF-IDF vectorizer + Logistic Regression with balanced class weights
+    pipeline = make_pipeline(
+        TfidfVectorizer(stop_words="english"),
+        LogisticRegression(max_iter=300, class_weight='balanced')
+    )
 
-def predict_news(news_text: str) -> str:
-    """
-    Clean and vectorize the input text, then predict whether it is Fake or Real.
-    """
-    cleaned_text = clean_text(news_text)
-    news_vectorized = vectorizer.transform([cleaned_text])
-    prediction = model.predict(news_vectorized)[0]
-    return "Real" if prediction == 1 else "Fake"
+    # Train the model
+    pipeline.fit(X_train, y_train)
+
+    # Evaluate the model on the test set
+    accuracy = pipeline.score(X_test, y_test)
+    print(f"\nModel Accuracy on test set: {accuracy:.2f}")
+    y_pred = pipeline.predict(X_test)
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+
+    # Ensure the "models" directory exists
+    os.makedirs("models", exist_ok=True)
+
+    # Save the trained pipeline
+    joblib.dump(pipeline, "models/best_model.pkl")
+    print("\nModel saved to models/best_model.pkl")
 
 if __name__ == "__main__":
-    sample_text = "Breaking news: Major breakthrough in renewable energy technology."
-    print("Prediction:", predict_news(sample_text))
+    train_and_save_model()
